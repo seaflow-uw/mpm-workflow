@@ -1,4 +1,4 @@
-# SeaFlow division rate growth model workflow repository
+# SeaFlow matrix population model workflow repository
 
 The basic workflow is to generate SeaFlow particle size distribution and PAR data using the R notebook `create_psd.Rmd`.
 Then create plots and run the model using the Python script `fit_models.py`.
