@@ -1,0 +1,115 @@
+---
+# tasks file for docker
+
+- name: Ensure previous docker packages are uninstalled
+  become: yes
+  apt:
+    name:
+      - docker
+      - docker-engine
+      - docker.io
+      - containerd
+      - runc
+    state: absent
+    update_cache: yes
+    cache_valid_time: 1800
+
+- name: Install Apt prereqs
+  become: yes
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-pip
+    state: present
+    update_cache: yes
+    cache_valid_time: 1800
+
+- name: Add docker Apt signing key
+  become: yes
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+
+- name: Get Ubuntu codename
+  command: lsb_release -cs
+  register: codename_result
+  check_mode: no
+  changed_when: False
+
+- name: Add Docker package repository
+  become: yes
+  apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu {{ codename_result.stdout }} stable"
+    filename: "docker.list"
+    state: present
+    update_cache: yes
+
+- name: Install docker
+  become: yes
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+    state: present
+    update_cache: yes
+    cache_valid_time: 1800
+
+- name: "Check for docker data directory {{ docker_data }}"
+  become: no
+  stat:
+    path: "{{ docker_data }}"
+  register: register_docker_data
+
+- debug:
+    msg: " register_docker_data.stat.exists == {{ register_docker_data.stat.exists }}"
+
+- name: "Create docker data directory at"
+  when: not register_docker_data.stat.exists
+  block:
+    - name: Stop docker
+      systemd:
+        name: docker
+        state: stopped
+
+    - name: Create docker data directory
+      become: yes
+      ansible.posix.synchronize:
+        src: /var/lib/docker/
+        dest: "{{ docker_data }}/"
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: Modify docker config to point to new data directory
+      become: yes
+      template:
+        src: "daemon.json.j2"
+        dest: "/etc/docker/daemon.json"
+
+    - name: Start docker
+      systemd:
+        name: docker
+        state: started
+
+- name: Add the ansible user to docker group
+  become: yes
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+
+- name: Reset SSH connection to register docker group addition
+  meta: reset_connection
+
+- name: Run Docker hello world
+  command: docker run --rm hello-world
+  register: hello_world_result
+  check_mode: no
+  changed_when: False
+
+- name: Install Python Docker SDK
+  pip:
+    name: docker

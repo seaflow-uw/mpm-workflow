@@ -1,0 +1,15 @@
+---
+# tasks file for rclone
+
+- name: Include executable_downloader role
+  include_role:
+    name: executable_downloader
+  vars:
+    execdl_name: "{{ rclone_name }}"
+    execdl_checksum: "{{ rclone_checksum }}"
+    execdl_version: "{{ rclone_version }}"
+    execdl_version_success_string: "{{ rclone_version_success_string }}"
+    execdl_version_cmd: "{{ rclone_version_cmd }}"
+    execdl_url: "{{ rclone_url }}"
+    execdl_downloaded_file: "{{ rclone_downloaded_file }}"
+    execdl_extracted_path: "{{ rclone_extracted_path }}"

@@ -1,0 +1,25 @@
+- hosts: all
+  become: yes
+  become_method: sudo
+  tasks:
+    - name: Ensure basic apt packages are installed
+      apt:
+        name:
+          - zip
+          - bmon
+          - net-tools
+        update_cache: yes
+        cache_valid_time: 1800
+
+- hosts: all
+  become: yes
+  become_method: sudo
+  roles:
+    - docker
+
+- hosts: all
+  tasks:
+  - name: "pystan2 : Pull docker image"
+    community.docker.docker_image:
+      name: "{{ pystan2_image }}:{{ pystan2_version }}"
+      source: pull

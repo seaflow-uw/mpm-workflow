@@ -1,0 +1,4 @@
+---
+# defaults file for docker
+
+docker_data: /var/lib/docker

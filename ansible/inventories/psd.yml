@@ -1,0 +1,8 @@
+---
+all:
+  hosts:
+    seaflowpsd:
+      ansible_user: ubuntu
+      ansible_host: psd
+      pystan2_image: myaccount/seaflow-model-pystan2
+      pystan2_version: latest
