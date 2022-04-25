@@ -19,10 +19,10 @@ It should have a column `cruise` for cruise name and TRUE/FALSE column `Zenodo` 
 cruise_dir <- "/Volumes/workdata/SeaFlow-VCT-parquet/"
 inst_log_tsv <- "SeaFlow\ instrument\ log\ -\ metadata-2022-03-12.tsv"
 inst_log <- readr::read_delim(inst_log_tsv, delim = "\t")
-cruises <- inst_log %>% filter(Zenodo == TRUE) %>% pull(cruise)
+cruises <- inst_log %>% filter(Curation == TRUE) %>% pull(cruise)
 pop <- "prochloro"
 quantile_ <- "2.5"
-bins <- 25
+bins <- 50
 global_Qc_range_flag <- TRUE
 cores <- 6
 per_cruise_out_dir <- "psd-data"
@@ -108,7 +108,7 @@ get_Qc_ranges <- function(cruise_paths, quantile_, pop, bins) {
     # from the previous step
     newrange <- get_delta_v_int_Qc_range(Qc_range_orig, bins)
     cruise_paths[i, "Qc_range_orig_start"] <- Qc_range_orig[1]
-    cruise_paths[i, "Qc_range_orig_end"] <- Qc_range_orig[2]
+    cruise_paths[i, "Qc_range_orig_end"] <- Qc_range_orig[2] * 2  # to make sure to have empty bins at the end of the PSD
     cruise_paths[i, "delta_log2"] <- newrange$delta_log2
     cruise_paths[i, "delta_log2_inv"] <- newrange$delta_log2_inv
     cruise_paths[i, "delta_log2_inv_int"] <- newrange$delta_log2_inv_int
