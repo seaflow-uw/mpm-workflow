@@ -2,9 +2,9 @@
 pjobs=10
 stanfile=m_pmb_sigprior_v2.stan
 modelname=m_pmb
-psdfile=combined.psd-hourly.parquet
-gridfile=combined.psd-grid.parquet
-parfile=combined.par-hourly.parquet
+psdfile=data/2022-09-06/curated.psd-hourly.parquet
+gridfile=data/2022-09-06/curated.psd-grid.parquet
+parfile=data/2022-09-06/curated.par-hourly.parquet
 desc=Pro
 outdirbase=output
 logdir=logs
@@ -26,8 +26,10 @@ python3 fit_models.py plot-cruise \
 # --colsep " " splits two space-separated arguments on single line into {1} and {2}
 # e.g. if a line has 'A B' then {1} == A and {2} == B
 # in this case this would be cruise and day
-python3 fit_models.py days --dated-parquet-file "$psdfile" --no-partial-days \
-  | awk 'NR > 1 {print $2, $3}' \
+# to select based on when number of hours in a day, replace line 32 by" | awk 'NR > 1 && $8 > 12 {print $2, $3, $8}' \
+# to run model on a single cruise, add below line 32: grep 'CRUISENAME' \
+python3 fit_models.py days --dated-parquet-file "$psdfile" \
+  | awk 'NR > 1 {print $2, $3, $8}' \
   | parallel -P "$pjobs" --colsep " " \
       sh -c "echo {1} {2}; python3 fit_models.py model \
         --psd-file "$psdfile" \
