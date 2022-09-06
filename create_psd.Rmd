@@ -16,7 +16,7 @@ Here it's called `SeaFlow\ instrument\ log\ -\ metadata-2022-03-12.tsv`.
 It should have a column `cruise` for cruise name and TRUE/FALSE column `Zenodo` to indicate if the data has been published to Zenodo. This file is only used to build a list of cruises to process. Modify the code in the block below to change this list of cruises.
 
 ```{r}
-cruise_dir <- "/Volumes/workdata/SeaFlow-VCT-parquet/"
+cruise_dir <- "./data"
 inst_log_tsv <- "SeaFlow\ instrument\ log\ -\ metadata-2022-03-12.tsv"
 inst_log <- readr::read_delim(inst_log_tsv, delim = "\t")
 cruises <- inst_log %>% filter(Curation == TRUE) %>% pull(cruise)
@@ -26,6 +26,7 @@ bins <- 50
 global_Qc_range_flag <- TRUE
 cores <- 6
 per_cruise_out_dir <- "psd-data"
+combined_outfile_prefix <- "combined"
 ```
 
 Declare functions used in this notebook.
@@ -302,20 +303,20 @@ psd_grid_files <- list.files(per_cruise_out_dir, pattern = "*\\.psd-grid\\.parqu
 combined_par_hourly <- dplyr::bind_rows(lapply(par_hourly_files, function(f) {
   arrow::read_parquet(f)
 }))
-arrow::write_parquet(combined_par_hourly, "combined.par-hourly.parquet")
+arrow::write_parquet(combined_par_hourly, paste0(combined_outfile_prefix, ".par-hourly.parquet"))
 
 combined_psd_full <- dplyr::bind_rows(lapply(psd_full_files, function(f) {
   arrow::read_parquet(f)
 }))
-arrow::write_parquet(combined_psd_full, "combined.psd-full.parquet")
+arrow::write_parquet(combined_psd_full, paste0(combined_outfile_prefix, ".psd-full.parquet"))
 
 combined_psd_hourly <- dplyr::bind_rows(lapply(psd_hourly_files, function(f) {
   arrow::read_parquet(f)
 }))
-arrow::write_parquet(combined_psd_hourly, "combined.psd-hourly.parquet")
+arrow::write_parquet(combined_psd_hourly, paste0(combined_outfile_prefix, ".psd-hourly.parquet"))
 
 combined_grid <- dplyr::bind_rows(lapply(psd_grid_files, function(f) {
   arrow::read_parquet(f)
 }))
-arrow::write_parquet(combined_grid, "combined.psd-grid.parquet")
+arrow::write_parquet(combined_grid, paste0(combined_outfile_prefix, ".psd-grid.parquet"))
 ```
