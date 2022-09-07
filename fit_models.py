@@ -11,11 +11,17 @@ logging_ch.setFormatter(
 )
 logger.addHandler(logging_ch)
 
+import datetime
+from collections import deque
+from hashlib import md5
+import multiprocessing as mp
 import os
+from pathlib import Path
 import pickle
 import platform
-from hashlib import md5
-from pathlib import Path
+import signal
+import subprocess
+import sys
 import time
 
 from boltons.fileutils import atomic_save
@@ -28,11 +34,6 @@ import pandas as pd
 import click
 import pystan
 
-# Do this to solve module not found error when creating subprocesses
-# during model run
-# https://discourse.mc-stan.org/t/new-to-pystan-always-get-this-error-when-attempting-to-sample-modulenotfounderror-no-module-named-stanfit4anon-model/19288/7
-import multiprocessing
-multiprocessing.set_start_method("fork")
 
 
 def StanModel_cache(model_code, model_name=None, **kwargs):
@@ -54,6 +55,13 @@ def StanModel_cache(model_code, model_name=None, **kwargs):
         logger.info("Using cached StanModel in %s", cache_fn)
     return sm
 
+
+
+# Is this process a child of the CLI parent?
+# Must be a dict to allow setting from within a function
+process_state = {
+    "is_child": False,
+}
 
 # use test data (not all data is used for fitting/training)
 use_testdata = False
@@ -109,7 +117,7 @@ itestfile = None
 size_units = 'fg C cell$^{-1}$'
 
 
-@click.group()
+@click.group(context_settings=dict(help_option_names=['-h', '--help']))
 def cli():
     pass
 
@@ -117,13 +125,13 @@ def cli():
 @cli.command('days')
 @click.option('--dated-parquet-file', required=True, type=click.Path(exists=True, file_okay=True, dir_okay=False),
               help='Parquet data file with columns for cruise and date.')
-@click.option('--partial-days/--no-partial-days', default=True, show_default=True,
-            help='Display partial days (< 24 hours).')
-def cmd_days(dated_parquet_file, partial_days):
+@click.option('--no-partial-days', is_flag=True, default=False, show_default=True,
+            help='Exclude partial days (< 24 hours).')
+def cmd_days(dated_parquet_file, no_partial_days):
     """Print a table of cruise days in this dated parquet file"""
     cruise_days = get_cruise_days(pd.read_parquet(dated_parquet_file))
     all_days = len(cruise_days)
-    if not partial_days:
+    if no_partial_days:
         # Remove incomplete days
         cruise_days = cruise_days.groupby('cruise').apply(lambda g: g[g['hours_in_day'] == 24])
         cruise_days = cruise_days.reset_index(drop=True)
@@ -191,10 +199,14 @@ def parse_days_option(ctx, param, value):
 @click.option('--days', type=str, callback=parse_days_option,
               help="""Cruise days to process, as a comma-separated list.
                       Items in the list may specify right-open, or [a,b), ranges, e.g. 3-5 for 3,4.""")
-@click.option('--partial-days/--no-partial-days', default=True, show_default=True,
-            help='Include or exclude partial days (< 24 hours).')
+@click.option('--no-partial-days', is_flag=True, default=False, show_default=True,
+            help='Exclude partial days (< 24 hours).')
+@click.option('--jobs', type=int, default=1,
+              help=f'Number of cruise days to process at a time, each using {num_chains} threads.')
+@click.option('--is-child', is_flag=True, default=False, show_default=True, hidden=True,
+            help='This process was called by itself, i.e. is a child prcoess.')
 def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, par_file,
-                  use_model_cache, cruise, days, partial_days):
+                  use_model_cache, cruise, days, no_partial_days, jobs, is_child):
     """Run a Stan model for all cruises in output_dir"""
     # Read the three data files and do some basic checks
     logger.info('reading data files')
@@ -217,7 +229,7 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
         # Select one cruise
         cruise_days = cruise_days[cruise_days['cruise'] == cruise]
         print(cruise_days.to_string(index=False))
-        if not partial_days:
+        if no_partial_days:
             all_days = len(cruise_days)
             # Remove incomplete days
             cruise_days = cruise_days[cruise_days['hours_in_day'] == 24]
@@ -238,7 +250,7 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
     else:
         # All cruises and days
         print(cruise_days.to_string(index=False))
-        if not partial_days:
+        if no_partial_days:
             all_days = len(cruise_days)
             # Remove incomplete days
             cruise_days = cruise_days.groupby('cruise').apply(lambda g: g[g['hours_in_day'] == 24])
@@ -251,12 +263,92 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
     print('plan as "cruise: [days ...]"')
     for cruise in sorted(plan.keys()):
         print('  {:s}: {:s}'.format(cruise, str(plan[cruise])))
+    
+    total_days_to_run = sum([len(v) for v in plan.values()])
+    jobs = min(total_days_to_run, jobs)
 
-    for cruise in sorted(plan.keys()):
-        for day in plan[cruise]:
-            process_cruise_day(psd_file, par_file, grid_file, cruise, day,
-                               model_name, stan_file, desc, use_model_cache,
-                               output_dir)
+    if is_child:
+        process_state["is_child"] = True
+
+    def exit_handler(signum, frame):
+        if not process_state["is_child"]:
+            print(f"received signal {signum}", file=sys.stderr)
+            print("All currently processing days will continue running, but no additional days will start ", file=sys.stderr)
+            print("after the current batch is done.", file=sys.stderr)
+            print("This is a known problem with pystan2 (https://github.com/stan-dev/pystan2/issues/506)", file=sys.stderr)
+        sys.exit()
+
+    signal.signal(signal.SIGINT, exit_handler)
+
+    if jobs == 1:
+        for cruise in sorted(plan.keys()):
+            # All output files will all go in a cruise subpath
+            output_dir = os.path.join(output_dir, cruise)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            for day in plan[cruise]:
+                results = process_cruise_day(
+                    psd_file, par_file, grid_file, cruise, day,
+                    model_name, stan_file, desc, use_model_cache,
+                    output_dir
+                )
+                logger.info(results)
+    else:
+        todo, running, done = deque(), {}, []
+        for cruise in sorted(plan.keys()):
+            # All output files will all go in a cruise subpath
+            output_dir = os.path.join(output_dir, cruise)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            for day in plan[cruise]:
+                todo.append({
+                    "name": f"{cruise}-{day}",
+                    "args": [
+                        sys.executable, sys.argv[0], "model",
+                        "--desc", desc, "--stan-file", stan_file,
+                        "--model-name", model_name, "--output-dir", output_dir,
+                        "--psd-file", psd_file, "--par-file", par_file,
+                        "--grid-file", grid_file,
+                        "--cruise", cruise, "--days", str(day),
+                        "--is-child"
+                    ],
+                    "popen": None,
+                    "logpath": os.path.join(output_dir, f"{cruise}-{day}.log"),
+                    "logfile": None,
+                    "start": None,
+                    "end": None
+                })
+
+        while True:
+            if len(done) == total_days_to_run:
+                break
+            # Check for finished jobs
+            just_finished = []
+            for k, v in running.items():
+                if not (v["popen"].poll() is None):
+                    v["logfile"].close()
+                    v["end"] = datetime.datetime.now()
+                    done.append(v)
+                    just_finished.append(k)
+                    logger.info(f"{k} finished with status = {v['popen'].poll()} in {v['end'] - v['start']}")
+            for k in just_finished:
+                del running[k]
+            # Start jobs in empty slots
+            while len(running) < jobs:
+                try:
+                    next_job = todo.popleft()
+                except IndexError:
+                    # No more jobs to start
+                    break
+                next_job["logfile"] = open(next_job["logpath"], "w")
+                next_job["start"] = datetime.datetime.now()
+                next_job["popen"] = subprocess.Popen(
+                    next_job["args"],
+                    stdout=next_job["logfile"],
+                    stderr=subprocess.STDOUT
+                )
+                running[next_job["name"]] = next_job
+                logger.info(f"starting {next_job['name']}, logging to {next_job['logpath']}")
+            time.sleep(1)
+        logger.info("all jobs finished")
 
 
 @cli.command('plot-cruise')
@@ -400,8 +492,12 @@ def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
     # -----------------------------------------------
     try:
         run_model(model, model_name, stan_file, data, savename_output)
+        status = "sucess"
     except Exception as e:
         logger.warning('model run for cruise %s, day %d failed: %s', cruise, day, e)
+        status = f"error: {e}"
+
+    return f"{cruise} {day} => {status}"
 
 
 def plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir):
@@ -795,4 +891,9 @@ def run_model(model, model_name, stan_file, data, savename_output):
 
 
 if __name__ == '__main__':
+    # Do this to solve module not found error when creating subprocesses
+    # during model run
+    # https://discourse.mc-stan.org/t/new-to-pystan-always-get-this-error-when-attempting-to-sample-modulenotfounderror-no-module-named-stanfit4anon-model/19288/7
+    mp.set_start_method("fork")
+
     cli()
