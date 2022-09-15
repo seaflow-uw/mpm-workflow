@@ -1,6 +1,6 @@
 import logging
+logging.basicConfig(handlers=[logging.NullHandler()])
 logger = logging.getLogger(__name__)
-logger.propagate = False  # prevent double logging after importing pystan
 logger.setLevel(logging.INFO)
 logging_ch = logging.StreamHandler()
 logging_ch.setFormatter(
@@ -57,10 +57,12 @@ def StanModel_cache(model_code, model_name=None, **kwargs):
 
 
 
-# Is this process a child of the CLI parent?
+# Is this process a leaf, i.e. it won't directly spawn children.
+# (Technically pystan2 will spawn children)
+# Used in exit handler to avoid all children printing the same message.
 # Must be a dict to allow setting from within a function
 process_state = {
-    "is_child": False,
+    "leaf": False,
 }
 
 # use test data (not all data is used for fitting/training)
@@ -171,8 +173,10 @@ def parse_days_option(ctx, param, value):
         try:
             days.append(int(item))
         except ValueError:
-            # Let any exceptions bubble up to stop the application
-            day1, day2 = [int(day) for day in item.split('-')]
+            try:
+                day1, day2 = [int(day) for day in item.split('-')]
+            except ValueError as e:
+                raise click.BadParameter(e)
             days.extend(range(day1, day2))
     return days
 
@@ -203,10 +207,10 @@ def parse_days_option(ctx, param, value):
             help='Exclude partial days (< 24 hours).')
 @click.option('--jobs', type=int, default=1,
               help=f'Number of cruise days to process at a time, each using {num_chains} threads.')
-@click.option('--is-child', is_flag=True, default=False, show_default=True, hidden=True,
-            help='This process was called by itself, i.e. is a child prcoess.')
+@click.option('--leaf', is_flag=True, default=False, show_default=True, hidden=True,
+            help='This process will not directly spawn subprocesses.')
 def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, par_file,
-                  use_model_cache, cruise, days, no_partial_days, jobs, is_child):
+                  use_model_cache, cruise, days, no_partial_days, jobs, leaf):
     """Run a Stan model for all cruises in output_dir"""
     # Read the three data files and do some basic checks
     logger.info('reading data files')
@@ -267,51 +271,55 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
     total_days_to_run = sum([len(v) for v in plan.values()])
     jobs = min(total_days_to_run, jobs)
 
-    if is_child:
-        process_state["is_child"] = True
+    if leaf:
+        process_state["leaf"] = True
 
     def exit_handler(signum, frame):
-        if not process_state["is_child"]:
+        if not process_state["leaf"]:
             print(f"received signal {signum}", file=sys.stderr)
             print("All currently processing days will continue running, but no additional days will start ", file=sys.stderr)
             print("after the current batch is done.", file=sys.stderr)
             print("This is a known problem with pystan2 (https://github.com/stan-dev/pystan2/issues/506)", file=sys.stderr)
+            print(f"You can kill all running processes with `kill -9 -- -{os.getpgid(os.getpid())}`", file=sys.stderr)
+            print("This may leave behind some open resources, particularly if you're working on an NFS mounted filesytem.", file=sys.stderr)
         sys.exit()
 
     signal.signal(signal.SIGINT, exit_handler)
 
-    if jobs == 1:
-        for cruise in sorted(plan.keys()):
-            # All output files will all go in a cruise subpath
-            output_dir = os.path.join(output_dir, cruise)
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            for day in plan[cruise]:
-                results = process_cruise_day(
-                    psd_file, par_file, grid_file, cruise, day,
-                    model_name, stan_file, desc, use_model_cache,
-                    output_dir
-                )
-                logger.info(results)
+    if leaf:
+        assert total_days_to_run == 1
+        assert len(list(plan.keys())) == 1
+        cruise = list(plan.keys())[0]
+        assert len(plan[cruise]) == 1
+        day = plan[cruise][0]
+        results = process_cruise_day(
+            psd_file, par_file, grid_file, cruise, day,
+            model_name, stan_file, desc, use_model_cache,
+            output_dir
+        )
+        logger.info(results)
+        if not results.startswith(f"{cruise} {day} => success"):
+            sys.exit(1)
     else:
         todo, running, done = deque(), {}, []
         for cruise in sorted(plan.keys()):
             # All output files will all go in a cruise subpath
-            output_dir = os.path.join(output_dir, cruise)
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            cruise_output_dir = os.path.join(output_dir, cruise)
+            Path(cruise_output_dir).mkdir(parents=True, exist_ok=True)
             for day in plan[cruise]:
                 todo.append({
                     "name": f"{cruise}-{day}",
                     "args": [
                         sys.executable, sys.argv[0], "model",
                         "--desc", desc, "--stan-file", stan_file,
-                        "--model-name", model_name, "--output-dir", output_dir,
+                        "--model-name", model_name, "--output-dir", cruise_output_dir,
                         "--psd-file", psd_file, "--par-file", par_file,
                         "--grid-file", grid_file,
                         "--cruise", cruise, "--days", str(day),
-                        "--is-child"
+                        "--leaf", "--jobs", "1"
                     ],
                     "popen": None,
-                    "logpath": os.path.join(output_dir, f"{cruise}-{day}.log"),
+                    "logpath": os.path.join(cruise_output_dir, f"{cruise}_day{day:02}.log"),
                     "logfile": None,
                     "start": None,
                     "end": None
@@ -390,7 +398,7 @@ def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise):
         # All cruises
         plan = sorted(cruises)
 
-    print('plotting cruises {:s}'.format(str(plan)))
+    logger.info('plotting cruises %s', plan)
 
     for cruise in plan:
         plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir)
@@ -492,7 +500,7 @@ def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
     # -----------------------------------------------
     try:
         run_model(model, model_name, stan_file, data, savename_output)
-        status = "sucess"
+        status = "success"
     except Exception as e:
         logger.warning('model run for cruise %s, day %d failed: %s', cruise, day, e)
         status = f"error: {e}"
@@ -698,10 +706,11 @@ def data_prep(data_gridded, dt=15, limit_days=1, start=0, prior_only=False, incl
         if not np.all(ind_obs):
             total = data['obs'].shape[1]
             remove = total - data['obs'][:, ind_obs].shape[1]
-            print('start is set to {}, limit_days is set to {}, removing {}/{} observation times'.format(start,
-                                                                                                         limit_days,
-                                                                                                         remove,
-                                                                                                         total))
+            logger.info(
+                'start is set to {}, limit_days is set to {}, removing {}/{} observation times'.format(
+                    start, limit_days, remove, total
+                )
+            )
 
         data['t_obs'] = data['t_obs'][ind_obs] - start*60
         data['obs'] = data['obs'][:,ind_obs]
@@ -753,21 +762,21 @@ def run_model(model, model_name, stan_file, data, savename_output):
         t0 = time.time()
         mcmcs = model.sampling(data=data, iter=2000, chains=num_chains)
         sampling_time = time.time() - t0  # in seconds
-        print('Model {} for {}-hour window starting at {} hours fit in {} minutes.'.format(model_name,
-                                                                                        limit_days*24+2*int(inclusive),
-                                                                                        data['start'],
-                                                                                        np.round(sampling_time/60, 2)))
+        logger.info(
+            'Model %s for %s-hour window starting at %s hours fit in %s minutes.',
+            model_name, str(limit_days*24+2*int(inclusive)), str(data['start']), str(np.round(sampling_time/60, 2))
+        )
         # get max Rhat
         rhat_max = get_max_rhat(mcmcs)
-        print('{}: in try {}/{} found Rhat={:.3f}'.format(model_name, itry+1, num_tries, rhat_max), end='')
+        logger.info('%s: in try %d/%d found Rhat=%s', model_name, itry+1, num_tries, f"{rhat_max:.03}")
         if rhat_max < 1.1 or itry == num_tries - 1:
-            print()
+            logger.info("")
             break
-        print(', trying again')
+        logger.info(', trying again')
 
-    print('{}'.format(model_name)) 
-    print('\n'.join(x for x in mcmcs.__str__().split('\n') if '[' not in x))
-    print()
+    logger.info(model_name) 
+    logger.info('\n'.join(x for x in mcmcs.__str__().split('\n') if '[' not in x))
+    logger.info("")
 
     with nc4.Dataset(savename_output, 'w') as nc:
         ncm = nc.createGroup(model_name)
