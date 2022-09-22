@@ -154,7 +154,7 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
     
     par <- sfl_tbl %>%
       dplyr::filter(flag == 0) %>%
-      dplyr::select(date, par)
+      dplyr::select(date, par, lat, lon)
     
     # Correct raw PAR values
     par_calib <- popcycle::read_par_csv() %>%
@@ -228,7 +228,7 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
         dplyr::filter(date %in% unique(psd$date))
       hourly_par <- par %>%
         dplyr::group_by(date = lubridate::floor_date(date, "hour")) %>%
-        dplyr::summarise(par = mean(par, na.rm = T))
+        dplyr::summarise(par = mean(par, na.rm = T), lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T))
       # Add cruise column
       par <- par %>% dplyr::mutate(cruise = row$cruise, .before = 1)
       hourly_par <- hourly_par %>% dplyr::mutate(cruise = row$cruise, .before = 1)

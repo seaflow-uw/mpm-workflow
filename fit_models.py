@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 import click
 import pystan
-
+import suncalc
 
 
 def StanModel_cache(model_code, model_name=None, **kwargs):
@@ -125,21 +125,13 @@ def cli():
 
 
 @cli.command('days')
-@click.option('--dated-parquet-file', required=True, type=click.Path(exists=True, file_okay=True, dir_okay=False),
-              help='Parquet data file with columns for cruise and date.')
-@click.option('--no-partial-days', is_flag=True, default=False, show_default=True,
-            help='Exclude partial days (< 24 hours).')
-def cmd_days(dated_parquet_file, no_partial_days):
+@click.option('--par-file', required=True, type=click.Path(exists=True, file_okay=True, dir_okay=False),
+              help='PAR Parquet file.')
+@click.option('--no-sunrise', is_flag=True, default=False, show_default=True,
+              help="Don't start days at sunrise.")
+def cmd_days(par_file, no_sunrise):
     """Print a table of cruise days in this dated parquet file"""
-    cruise_days = get_cruise_days(pd.read_parquet(dated_parquet_file))
-    all_days = len(cruise_days)
-    if no_partial_days:
-        # Remove incomplete days
-        cruise_days = cruise_days.groupby('cruise').apply(lambda g: g[g['hours_in_day'] == 24])
-        cruise_days = cruise_days.reset_index(drop=True)
-        removed_days = all_days - len(cruise_days)
-        if removed_days > 0:
-            logger.info('removed %d incomplete days from consideration', removed_days)
+    cruise_days = get_cruise_days(pd.read_parquet(par_file), sunrise_days=not no_sunrise)
     print(cruise_days.to_string(index=False))
 
 
@@ -201,16 +193,16 @@ def parse_days_option(ctx, param, value):
 @click.option('--cruise', type=str,
               help='Name of cruise to process. If not supplied all cruises will be processed.')
 @click.option('--days', type=str, callback=parse_days_option,
-              help="""Cruise days to process, as a comma-separated list.
-                      Items in the list may specify right-open, or [a,b), ranges, e.g. 3-5 for 3,4.""")
-@click.option('--no-partial-days', is_flag=True, default=False, show_default=True,
-            help='Exclude partial days (< 24 hours).')
+            help="""Cruise days to process, as a comma-separated list.
+                    Items in the list may specify right-open, or [a,b), ranges, e.g. 3-5 for 3,4.""")
+@click.option('--no-sunrise', is_flag=True, default=False, show_default=True,
+              help="Don't start days at sunrise.")
 @click.option('--jobs', type=int, default=1,
               help=f'Number of cruise days to process at a time, each using {num_chains} threads.')
 @click.option('--leaf', is_flag=True, default=False, show_default=True, hidden=True,
             help='This process will not directly spawn subprocesses.')
 def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, par_file,
-                  use_model_cache, cruise, days, no_partial_days, jobs, leaf):
+                  use_model_cache, cruise, days, no_sunrise, jobs, leaf):
     """Run a Stan model for all cruises in output_dir"""
     # Read the three data files and do some basic checks
     logger.info('reading data files')
@@ -226,20 +218,13 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
 
     # Construct a plan for cruises and days to process
     logger.info('constructing processing plan')
-    cruise_days = get_cruise_days(psd)
+    cruise_days = get_cruise_days(par, sunrise_days=not no_sunrise)
 
     plan = {}
     if cruise:
         # Select one cruise
         cruise_days = cruise_days[cruise_days['cruise'] == cruise]
         print(cruise_days.to_string(index=False))
-        if no_partial_days:
-            all_days = len(cruise_days)
-            # Remove incomplete days
-            cruise_days = cruise_days[cruise_days['hours_in_day'] == 24]
-            removed_days = all_days - len(cruise_days)
-            if removed_days > 0:
-                logger.info('removed %d incomplete days from consideration', removed_days)
         if days:
             # Select valid days
             diff_days = np.setdiff1d(days, cruise_days['day'])
@@ -254,14 +239,6 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
     else:
         # All cruises and days
         print(cruise_days.to_string(index=False))
-        if no_partial_days:
-            all_days = len(cruise_days)
-            # Remove incomplete days
-            cruise_days = cruise_days.groupby('cruise').apply(lambda g: g[g['hours_in_day'] == 24])
-            cruise_days = cruise_days.reset_index(drop=True)
-            removed_days = all_days - len(cruise_days)
-            if removed_days > 0:
-                logger.info('removed %d incomplete days from consideration', removed_days)
         plan = {cruise: list(group['day']) for cruise, group in cruise_days.groupby("cruise")}
 
     print('plan as "cruise: [days ...]"')
@@ -295,7 +272,7 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
         results = process_cruise_day(
             psd_file, par_file, grid_file, cruise, day,
             model_name, stan_file, desc, use_model_cache,
-            output_dir
+            output_dir, sunrise_days=not no_sunrise
         )
         logger.info(results)
         if not results.startswith(f"{cruise} {day} => success"):
@@ -307,17 +284,20 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
             cruise_output_dir = os.path.join(output_dir, cruise)
             Path(cruise_output_dir).mkdir(parents=True, exist_ok=True)
             for day in plan[cruise]:
+                args = [
+                    sys.executable, sys.argv[0], "model",
+                    "--desc", desc, "--stan-file", stan_file,
+                    "--model-name", model_name, "--output-dir", cruise_output_dir,
+                    "--psd-file", psd_file, "--par-file", par_file,
+                    "--grid-file", grid_file,
+                    "--cruise", cruise, "--days", str(day),
+                    "--leaf", "--jobs", "1"
+                ]
+                if not no_sunrise:
+                    args.append("--sunrise")
                 todo.append({
                     "name": f"{cruise}-{day}",
-                    "args": [
-                        sys.executable, sys.argv[0], "model",
-                        "--desc", desc, "--stan-file", stan_file,
-                        "--model-name", model_name, "--output-dir", cruise_output_dir,
-                        "--psd-file", psd_file, "--par-file", par_file,
-                        "--grid-file", grid_file,
-                        "--cruise", cruise, "--days", str(day),
-                        "--leaf", "--jobs", "1"
-                    ],
+                    "args": args,
                     "popen": None,
                     "logpath": os.path.join(cruise_output_dir, f"{cruise}_day{day:02}.log"),
                     "logfile": None,
@@ -372,7 +352,9 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
             help='PAR Parquet file.')
 @click.option('--cruise', type=str,
               help='Name of cruise to process. If not supplied all cruises will be processed.')
-def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise):
+@click.option('--no-sunrise', is_flag=True, default=False, show_default=True,
+              help="Don't start days at sunrise.")
+def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise, no_sunrise):
     """Run a Stan model for all cruises in output_dir"""
     # Read the three data files and do some basic checks
     logger.info('reading data files')
@@ -386,9 +368,10 @@ def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise):
     if not np.array_equal(np.sort(psd['date'].unique()), np.sort(par['date'].unique())):
         raise click.ClickException('Mismatched date sets in psd-file and par-file')
 
-    # Construct a plan for cruises and days to process
+    # Construct a plan for cruises to process
     logger.info('selecting cruises to plot')
-    cruises = list(pd.read_parquet(psd_file)['cruise'].unique())
+    cruise_days = get_cruise_days(par, sunrise_days=not no_sunrise)
+    cruises = cruise_days["cruise"].unique()
     plan = []
     if cruise:
         if cruise not in cruises:
@@ -401,11 +384,16 @@ def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise):
     logger.info('plotting cruises %s', plan)
 
     for cruise in plan:
-        plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir)
+        cruise_start = cruise_days[cruise_days["cruise"] == cruise]["cruise_start"][0]
+        plot_cruise(
+            psd_file, par_file, grid_file, cruise, desc, output_dir,
+            start_timestamp=cruise_start
+        )
 
 
 def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
-                       stan_file, desc, use_model_cache, output_dir):
+                       stan_file, desc, use_model_cache, output_dir,
+                       sunrise_days=True):
     # ---------------------------------------
     # Compile or retrieve the Stan model code
     # Takes about 1 minute
@@ -423,21 +411,23 @@ def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
                                  obfuscate_model_name=False)
 
      # Get dates for this day
-    cruise_days = get_cruise_days(pd.read_parquet(psd_file))
+    cruise_days = get_cruise_days(pd.read_parquet(par_file), sunrise_days=sunrise_days)
     day_row = cruise_days[(cruise_days['cruise'] == cruise) & (cruise_days['day'] == day)]
     assert len(day_row) == 1
     start_date_str = day_row.iloc[0, day_row.columns.get_loc('start')].isoformat(timespec='seconds')
     end_date_str = day_row.iloc[0, day_row.columns.get_loc('end')].isoformat(timespec='seconds')
     hours_in_day = day_row.iloc[0, day_row.columns.get_loc('hours_in_day')]
+    cruise_start = day_row.iloc[0, day_row.columns.get_loc("cruise_start")]
 
-    logger.info('starting model run cruise %s, day %d, %d hours, %s - %s',
-                cruise, day, hours_in_day, start_date_str, end_date_str)
+    logger.info(
+        'starting model run: cruise %s, day %d, %d hours, %s - %s, cruise start %s',
+        cruise, day, hours_in_day, start_date_str, end_date_str, cruise_start
+    )
     # ------------------------------
     # Get raw data for a full cruise
     # ------------------------------
-    # Don't select day here, that happens later
     data_gridded, desc = get_data_parquet(psd_file, par_file, grid_file, desc,
-                                          cruise=cruise)
+                                          cruise, start_timestamp=cruise_start)
     desc = 'day={:02d}, {:s}'.format(day, desc)
 
     # -----------------------------
@@ -473,6 +463,13 @@ def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
     fig,axs = plt.subplots(nrows=nrows, sharex=True, figsize=(12,4*nrows))
     fig.set_facecolor('white')  # to avoid transparent background when saving to file
 
+    # To account for possibly manually set starting timestamp, set axis to always
+    # start at zero, with padding to show the full first and last column.
+    # A manually set timestamp might happen if you want to make sure the plot
+    # starts at sunrise, for example.
+    axis_pad = np.median(np.diff(data["t_obs"])) / 2
+    plt.xlim([0 - axis_pad, data["t_obs"][-1] + axis_pad])
+
     ax = axs[0]
     ax.set_title('processed '+desc, size=20)
     ax.plot(t, data['E'], color='gold')
@@ -483,13 +480,13 @@ def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
     ax.set(ylabel='size ({})'.format(size_units))
     add_colorbar(ax, norm=pc.norm, cmap=pc.cmap,
                 label='size class proportion')
-    ax.set_xlim(left=0.0)
+    #ax.set_xlim(left=0.0)
 
     ax = axs[2]
     pc = ax.pcolormesh(data['t_obs'], v, data['obs_count'], shading='auto')
     ax.set(ylabel='size ({})'.format(size_units))
     add_colorbar(ax, norm=pc.norm, cmap=pc.cmap, label='counts')
-    ax.set_xlim(left=0.0)
+    #ax.set_xlim(left=0.0)
     axs[-1].set_xlabel('time (minutes)')
 
     fig.savefig(processed_figure_output)
@@ -508,12 +505,16 @@ def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
     return f"{cruise} {day} => {status}"
 
 
-def plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir):
+def plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir,
+                start_timestamp=None):
     logger.info('plotting full cruise %s', cruise)
     # ------------------------------
     # Get raw data for a full cruise
     # ------------------------------
-    data_gridded, desc = get_data_parquet(psd_file, par_file, grid_file, desc, cruise=cruise)
+    data_gridded, desc = get_data_parquet(
+        psd_file, par_file, grid_file, desc, cruise,
+        start_timestamp=start_timestamp
+    )
 
     # -----------------------------
     # Define output files path base
@@ -534,6 +535,13 @@ def plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir):
 
     fig,axs = plt.subplots(nrows=nrows, sharex=True, figsize=(12,4*nrows))
     fig.set_facecolor('white')  # to avoid transparent background when saving to file
+
+    # To account for possibly manually set starting timestamp, set axis to always
+    # start at zero, with padding to show the full first and last column.
+    # A manually set timestamp might happen if you want to make sure the plot
+    # starts at sunrise, for example.
+    axis_pad = np.median(np.diff(data_gridded["time"])) / 2
+    plt.xlim([0 - axis_pad, data_gridded["time"][-1] + axis_pad])
 
     ax = axs[0]
     ax.set_title('raw '+desc, size=20)
@@ -558,8 +566,8 @@ def plot_cruise(psd_file, par_file, grid_file, cruise, desc, output_dir):
 
 
 # Get Parquet data
-def get_data_parquet(psd_file, par_file, grid_file, desc, cruise=None, day=None,
-                     coord_col='Qc_coord'):
+def get_data_parquet(psd_file, par_file, grid_file, desc, cruise,
+                     coord_col='Qc_coord', start_timestamp=None):
     grid_col = coord_col.split('_')[0]  # e.g. Qc from Qc_coord
 
     data_gridded = {}
@@ -573,13 +581,12 @@ def get_data_parquet(psd_file, par_file, grid_file, desc, cruise=None, day=None,
     logger.info('md5(grid["%s"]) = %s', grid_col, md5(grid[grid_col].values.tobytes()).hexdigest())
 
     # Select one cruise
-    if cruise is not None:
-        logger.info('selecting cruise == %s', cruise)
-        psd = psd[psd['cruise'] == cruise].reset_index(drop=True)
-        par = par[par['cruise'] == cruise].reset_index(drop=True)
-        grid = grid[grid['cruise'] == cruise].reset_index(drop=True)
-        if (len(psd) == 0 or len(par) == 0 or len(grid) == 0):
-            raise Exception("incomplete data after selecting for cruise")
+    logger.info('selecting cruise == %s', cruise)
+    psd = psd[psd['cruise'] == cruise].reset_index(drop=True)
+    par = par[par['cruise'] == cruise].reset_index(drop=True)
+    grid = grid[grid['cruise'] == cruise].reset_index(drop=True)
+    if (len(psd) == 0 or len(par) == 0 or len(grid) == 0):
+        raise Exception("incomplete data after selecting for cruise")
 
     logger.info('md5(psd["%s"]) = %s', coord_col, md5(psd[coord_col].values.tobytes()).hexdigest())
     logger.info('md5(par["par"]) = %s', md5(par['par'].values.tobytes()).hexdigest())
@@ -611,29 +618,31 @@ def get_data_parquet(psd_file, par_file, grid_file, desc, cruise=None, day=None,
     # Make sure data is sorted by date
     psd = psd.sort_values(['date', coord_col])
     par = par.sort_values(['date'])
+    # Get first date
+    first_psd_date = psd.iloc[0, psd.columns.get_loc('date')]
+    first_par_date = par.iloc[0, par.columns.get_loc('date')]
+    if first_psd_date != first_par_date:
+        raise ValueError(f"PSD and PAR for {cruise} have different starting timestamps")
+    logger.info("data starts at %s", first_psd_date)
+    if not start_timestamp:
+        start_timestamp = first_psd_date
+    elif start_timestamp > first_psd_date:
+        raise ValueError(f"start_timestamp is later than first date: {start_timestamp} > {first_psd_date}")
+    logger.info("cruise start is set to %s", start_timestamp)
     # Get the timedelta for each row from the earliest time point
-    psd['delta'] = psd['date'] - psd.loc[0, 'date']
-    par['delta'] = par['date'] - par.loc[0, 'date']
+    psd['delta'] = psd['date'] - start_timestamp
+    par['delta'] = par['date'] - start_timestamp
     # Express timedelta in terms of days, starting with 0 for first day
     psd['day'] = psd['delta'].map(lambda d: d.days)
     par['day'] = par['delta'].map(lambda d: d.days)
-
-    # Select one day
-    # This assumes the dates for psd and par are the same
-    if day is not None:
-        logger.info('selecting day = %d', day)
-        psd = psd[psd['day'] == day].reset_index(drop=True)
-        par = par[par['day'] == day].reset_index(drop=True)
-        if (len(psd) == 0 or len(par) == 0 or len(grid) == 0):
-            raise Exception("incomplete data after selecting for day")
 
     data_gridded['PAR'] = par['par'].values
 
     # Get times
     psd_by_date = psd.groupby('date')
     dates = pd.Series([k for k, _ in psd_by_date])
-    # Time since start of data in minutes
-    data_gridded['time'] = np.array([tdelta.total_seconds() / 60.0 for tdelta in (dates - dates[0])])
+    # Time since start_timestamp in minutes for each data point
+    data_gridded['time'] = np.array([tdelta.total_seconds() / 60.0 for tdelta in (dates - start_timestamp)])
 
     # Get counts and relative counts. Expand sparse data to include zero counts
     count_shape = (data_gridded['m'], len(dates))
@@ -658,16 +667,44 @@ def get_data_parquet(psd_file, par_file, grid_file, desc, cruise=None, day=None,
     return data_gridded, desc
 
 
-def get_cruise_days(df):
+
+def get_cruise_days(df, sunrise_days=True):
     """Get a dataframe of cruise days from df
     
     df is a dataframe with columns of 'cruise' (string) and 'date' (datetime)
     """
     df = df.copy()
-    cruise_days = {'cruise': [], 'day': [], 'start': [], 'end': [], 'hours_in_day': []}
+
+    cruise_days = {
+        'cruise': [],
+        'day': [],
+        'start': [],
+        'end': [],
+        'hours_in_day': [],
+        'first_sunrise_in_cruise': [],
+        'cruise_start': []
+    }
+
     for cruise, g1 in df.groupby('cruise'):
         g1 = g1.copy()
-        deltas = g1['date'] - g1.iloc[0, g1.columns.get_loc('date')]
+        first_row = g1.iloc[0, ]
+        first_date = first_row["date"]
+        first_sunrise = suncalc.get_times(first_row["date"], first_row["lon"], first_row["lat"])["sunrise"]
+        # suncalc returns timezone-naive pandas.Timestamp
+        # Add UTC timezone to make it arithmetically compatible with other dates
+        first_sunrise = pd.Timestamp(first_sunrise.value, tz="UTC")
+        # Round to nearest hour
+        first_sunrise_hour = first_sunrise.round("H")
+        if first_date < first_sunrise_hour:
+            # Make sure first sunrise <= first date
+            first_sunrise_hour = first_sunrise_hour - pd.Timedelta(1, "day")
+        if sunrise_days:
+            # Calculate day of cruise based on offset from sunrise on first day
+            # rounded to nearest hour
+            deltas = g1['date'] - first_sunrise_hour
+        else:
+            # Calculate day of cruise based on offset from date in data
+            deltas = g1['date'] - first_date
         g1['day'] = deltas.map(lambda d: d.days)
         for day, g2 in g1.groupby('day'):
             cruise_days['cruise'].append(cruise)
@@ -675,6 +712,8 @@ def get_cruise_days(df):
             cruise_days['start'].append(g2['date'].min())
             cruise_days['end'].append(g2['date'].max())
             cruise_days['hours_in_day'].append(g2['date'].unique().size)
+            cruise_days['first_sunrise_in_cruise'].append(first_sunrise)
+            cruise_days['cruise_start'].append(first_sunrise_hour if sunrise_days else first_date)
     days = pd.DataFrame(cruise_days)
     days.insert(0, 'cumulative_day', range(len(days)))
     return days
