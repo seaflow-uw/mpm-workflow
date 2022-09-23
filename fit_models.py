@@ -384,7 +384,8 @@ def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise, no_
     logger.info('plotting cruises %s', plan)
 
     for cruise in plan:
-        cruise_start = cruise_days[cruise_days["cruise"] == cruise]["cruise_start"][0]
+        sub_cruise_days = cruise_days[cruise_days["cruise"] == cruise].reset_index()
+        cruise_start = sub_cruise_days["cruise_start"][0]
         plot_cruise(
             psd_file, par_file, grid_file, cruise, desc, output_dir,
             start_timestamp=cruise_start
