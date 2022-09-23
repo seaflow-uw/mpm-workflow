@@ -17,17 +17,17 @@ python3 fit_models.py compile --stan-file "$stanfile" --model-name m_pmb 2>&1 | 
 # Create cruise-wide plots of input data for every cruise
 python3 fit_models.py plot-cruise \
   --desc "$desc" \
-  --output-dir cruise-plots \
+  --output-dir "$outdirbase" \
   --psd-file "$psdfile" \
   --grid-file "$gridfile" \
   --par-file "$parfile" 2>&1 | tee $logdir/cruise-plots.log
 
 # Run the model for all days
 python3 fit_models.py model \
-        --psd-file "$psdfile" \
-        --grid-file "$gridfile" \
-        --par-file "$parfile" \
-        --stan-file "$stanfile" --model-name "$modelname" \
-        --desc "$desc" \
-        --jobs "$pjobs" \
-        --output-dir ${outdirbase}-{1} 2>&1 | tee $logdir/model-run.log
+  --psd-file "$psdfile" \
+  --grid-file "$gridfile" \
+  --par-file "$parfile" \
+  --stan-file "$stanfile" --model-name "$modelname" \
+  --desc "$desc" \
+  --jobs "$pjobs" \
+  --output-dir ${outdirbase} 2>&1 | tee $logdir/model-run.log
