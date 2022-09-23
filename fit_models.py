@@ -293,8 +293,8 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
                     "--cruise", cruise, "--days", str(day),
                     "--leaf", "--jobs", "1"
                 ]
-                if not no_sunrise:
-                    args.append("--sunrise")
+                if no_sunrise:
+                    args.append("--no-sunrise")
                 todo.append({
                     "name": f"{cruise}-{day}",
                     "args": args,
