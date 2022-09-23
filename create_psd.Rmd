@@ -195,12 +195,16 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
       #grid <- popcycle::create_grid(bins, log_base=2, log_answers=FALSE, Qc_range = c(0.0135, 0.11777484))
       grid <- grid["Qc"]
       grid_df <- tibble::tibble(cruise=row$cruise, Qc=grid$Qc)
-      arrow::write_parquet(grid_df, paste0(out, ".psd-grid.parquet"))
       
       # Create the distribution
       psd <- popcycle::create_PSD(
         vct_files, quantile_, refracs, grid, ignore_dates = flagged_dates, pop = pop, cores = cores
       )
+      if (all(is.na(psd$date))) {
+        # No data for this cruise
+        message("no data for ", row$cruise)
+        next
+      }
       
       # Remove counts out of grid range (coord is NA)
       # Remove Qc_sum column
@@ -222,6 +226,7 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
       # Add cruise column
       psd <- psd %>% dplyr::mutate(cruise = row$cruise, .before = 1)
       hourly_psd <- hourly_psd %>% dplyr::mutate(cruise = row$cruise, .before = 1)
+      arrow::write_parquet(grid_df, paste0(out, ".psd-grid.parquet"))
       arrow::write_parquet(psd, paste0(out, ".psd-full.parquet"))
       arrow::write_parquet(hourly_psd, paste0(out, ".psd-hourly.parquet"))
       invisible(gc())
@@ -243,7 +248,6 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
       hourly_par <- hourly_par %>% dplyr::mutate(cruise = row$cruise, .before = 1)
       arrow::write_parquet(par, paste0(out, ".par-full.parquet"))
       arrow::write_parquet(hourly_par, paste0(out, ".par-hourly.parquet"))
-      
     } else {
       message("psd range has infinite values")
     }
