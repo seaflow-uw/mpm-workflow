@@ -2,9 +2,9 @@
 pjobs=10
 stanfile=m_pmb_sigprior_v2.stan
 modelname=m_pmb
-psdfile=data/2022-09-06/curated.psd-hourly.parquet
-gridfile=data/2022-09-06/curated.psd-grid.parquet
-parfile=data/2022-09-06/curated.par-hourly.parquet
+psdfile=curated.psd-hourly.parquet
+gridfile=curated.psd-grid.parquet
+parfile=curated.par-hourly.parquet
 desc=Pro
 outdirbase=output
 logdir=logs

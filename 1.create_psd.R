@@ -266,9 +266,9 @@ path.to.dbs <- path.to.dbs[-c(grep("KM1923_740", path.to.dbs))]
 pop <- "prochloro"
 quantile_ <- "2.5"
 bins <- 50
-global_Qc_range_flag <- TRUE
+global_Qc_range_flag <- TRUE # range Sept 2022 (v1.5) : 0.008140889 - 0.260508439
 cores <- 4
-out_dir <- paste0(as.Date(Sys.time()))
+out_dir <- paste0("data/",as.Date(Sys.time()))
 
 cruises <- basename(dirname(path.to.dbs))
 

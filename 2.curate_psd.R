@@ -30,9 +30,7 @@ plot_psd <- function(data = psd, z = "proportion"){
 #---------
 # READ PSD
 #---------
-setwd("~/Documents/DATA/MPM")
-
-in_dir <- "2022-09-06"
+in_dir <- "2022-09-22"
 
 # COMBINE all PSD (+ par)
 par_full_files <- list.files(in_dir, pattern = "*\\.par-full\\.parquet", full.names = TRUE, recursive = TRUE)
@@ -70,8 +68,6 @@ psd_all %>% ggplot() +
     scale_y_continuous(trans = 'log10') +
     facet_wrap(. ~ cruise, scale="free_x")
 
-
-# Select bad PSD cruises 
 bad_psd <- c()
 
 
@@ -102,6 +98,23 @@ good_cruises <- all_cruises[-c(out)]
 print(paste("total number of curated cruises: ", length(good_cruises)))
 
 
+# Save plots
+
+p <- psd_all %>% filter(cruise %in% good_cruises) %>%
+  ggplot() + 
+  geom_tile(aes(date, 1000*Qc, fill= n/norm)) +
+  theme_bw(base_size = 10) +
+  viridis::scale_fill_viridis(discrete = FALSE, name='count') +
+  scale_y_continuous(trans = 'log10') +
+  facet_wrap(. ~ cruise, scale="free_x")
+
+png(paste0(in_dir,"/all-psd.png"), width = 4800, height = 3600, res = 300)
+print(p)
+dev.off()
+
+
+
+
 # Save to MPM folder
 arrow::write_parquet(combined_psd_full %>% filter(cruise %in% good_cruises), paste0(in_dir, "/curated.psd-full.parquet"))
 arrow::write_parquet(combined_psd_hourly %>% filter(cruise %in% good_cruises), paste0(in_dir,"/curated.psd-hourly.parquet"))
@@ -109,20 +122,6 @@ arrow::write_parquet(combined_grid %>% filter(cruise %in% good_cruises), paste0(
 arrow::write_parquet(combined_par_hourly%>% filter(cruise %in% good_cruises), paste0(in_dir,"/curated.par-hourly.parquet"))
 
 
-
-# Save plots
-
-p <- psd_all %>% filter(cruise %in% good_cruises) %>%
-    ggplot() + 
-    geom_tile(aes(date, 1000*Qc, fill= n/norm)) +
-    theme_bw(base_size = 10) +
-    viridis::scale_fill_viridis(discrete = FALSE, name='count') +
-    scale_y_continuous(trans = 'log10') +
-    facet_wrap(. ~ cruise, scale="free_x")
-
-png(paste0(in_dir,"/all-psd.png"), width = 4800, height = 3600, res = 300)
-print(p)
-dev.off()
 
 
 
