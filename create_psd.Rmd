@@ -83,6 +83,7 @@ get_Qc_ranges <- function(cruise_paths, quantile_, pop, bins) {
     row <- cruise_paths[i, ]
     message("getting Qc_range for cruise = ", row$cruise)
     message("pop = ", pop)
+    message(row)
     
     sfl_tbl <- get_sfl_table(row$db)
     
@@ -97,12 +98,20 @@ get_Qc_ranges <- function(cruise_paths, quantile_, pop, bins) {
     data_cols <- paste0("Qc_", pop_refrac)
     
     vct_files <- list.files(row$vct_dir, "\\.parquet$", full.names=T)
-    #vct_files <- head(vct_files, 72)
     
     ptm <- proc.time()
-    Qc_range_orig <- popcycle::get_vct_quantile_range(
-      vct_files, data_cols, quantile_, c(0.01, 0.99), pop = pop, ignore_dates = flagged_dates
+    # Qc_range_orig <- popcycle::get_vct_quantile_range(
+    #  vct_files, data_cols, quantile_, c(0.01, 0.99), pop = pop, ignore_dates = flagged_dates
+    # )
+    message(glue::glue("data_cols={data_cols} quantile={quantile_} pop={pop}"))
+    message(glue::glue("length(flagged_dates) == {length(flagged_dates)} out of {length(sfl_tbl$date)} possible dates"))
+    Qc_range_orig <- popcycle::get_vct_range(
+     vct_files, data_cols, quantile_, pop = pop, ignore_dates = flagged_dates, cores = 1
     )
+    if (any(!is.finite(Qc_range_orig))) {
+      message("No cells of interest for this cruise")
+      next
+    }
     #Qc_range_orig <- get_vct_range(vct_files, data_cols, quantile = quantile_, pop = pop, cores = cores)
     # The growth model takes 1 / (log2 distance between bins) as an integer. Calculate the end of
     # the grid range as the closest such integer that creates a grid that contains the true grid range
@@ -121,7 +130,7 @@ get_Qc_ranges <- function(cruise_paths, quantile_, pop, bins) {
     message("refractive index = ", pop_refrac)
     message("quantile = ", quantile_)
     message("data columns = ", data_cols)
-    message(glue("Qc 0.1, 0.99 range = {Qc_range_orig[1]}, {Qc_range_orig[2]}"))
+    message(glue("Qc range = {Qc_range_orig[1]}, {Qc_range_orig[2]}"))
     message("delta_log2 = log2 distance between bins = ", newrange$delta_log2)
     message("delta_log2_inv = 1 / (log2 distance between bins) = ", newrange$delta_log2_inv)
     message(glue("Qc range with integer value for delta_log2_inv ({newrange$delta_log2_inv_int}) = {newrange$Qc_range[1]}, {newrange$Qc_range[2]}"))
@@ -268,8 +277,8 @@ cruise_paths_orig <- cruise_paths  # keep a copy before altering
 # Set a global Qc range for all cruises
 if (global_Qc_range_flag) {
   global_Qc_range_orig <- c(
-    min(cruise_paths$Qc_range_orig_start),
-    max(cruise_paths$Qc_range_orig_end)
+    min(cruise_paths$Qc_range_orig_start, na.rm=T),
+    max(cruise_paths$Qc_range_orig_end, na.rm=T)
   )
   global_Qc_range_data <- get_delta_v_int_Qc_range(global_Qc_range_orig, bins)
   print(global_Qc_range_data)

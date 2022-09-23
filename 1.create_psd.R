@@ -80,7 +80,7 @@ get_Qc_ranges <- function(cruise_paths, quantile_, pop, bins) {
       vct_files, data_cols, quantile_, c(0.01, 0.99), pop = pop, ignore_dates = flagged_dates
     )
     
-    if(!is.finite(any(Qc_range_orig))){
+    if(any(!is.finite(Qc_range_orig))){
       print("No cells of interest for this cruise")
       next
     }
