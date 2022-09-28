@@ -167,12 +167,16 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
       #grid <- popcycle::create_grid(bins, log_base=2, log_answers=FALSE, Qc_range = c(0.0135, 0.11777484))
       grid <- grid["Qc"]
       grid_df <- tibble::tibble(cruise=row$cruise, Qc=grid$Qc)
-      arrow::write_parquet(grid_df, paste0(out, ".psd-grid.parquet"))
       
       # Create the distribution
       psd <- popcycle::create_PSD(
         vct_files, quantile_, refracs, grid, ignore_dates = flagged_dates, pop = pop, cores = cores
       )
+      if (all(is.na(psd$date))) {
+        # No data for this cruise
+        message("no data for ", row$cruise)
+        next
+      }
       
       # Remove counts out of grid range (coord is NA)
       # Remove Qc_sum column
@@ -194,6 +198,7 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
       # Add cruise column
       psd <- psd %>% dplyr::mutate(cruise = row$cruise, .before = 1)
       hourly_psd <- hourly_psd %>% dplyr::mutate(cruise = row$cruise, .before = 1)
+      arrow::write_parquet(grid_df, paste0(out, ".psd-grid.parquet"))
       arrow::write_parquet(psd, paste0(out, ".psd-full.parquet"))
       arrow::write_parquet(hourly_psd, paste0(out, ".psd-hourly.parquet"))
       invisible(gc())
@@ -209,17 +214,12 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
         dplyr::filter(date %in% unique(psd$date))
       hourly_par <- par %>%
         dplyr::group_by(date = lubridate::floor_date(date, "hour")) %>%
-        dplyr::summarise(
-          par = mean(par, na.rm = T),
-          lat = mean(lat, na.rm = T),
-          lon = mean(lon, na.rm = T)
-        )
+        dplyr::summarise(par = mean(par, na.rm = T), lat = mean(lat, na.rm = T), lon = mean(lon, na.rm = T))
       # Add cruise column
       par <- par %>% dplyr::mutate(cruise = row$cruise, .before = 1)
       hourly_par <- hourly_par %>% dplyr::mutate(cruise = row$cruise, .before = 1)
       arrow::write_parquet(par, paste0(out, ".par-full.parquet"))
       arrow::write_parquet(hourly_par, paste0(out, ".par-hourly.parquet"))
-      
     } else {
       message("psd range has infinite values")
     }
@@ -227,7 +227,6 @@ create_model_data <- function(cruise_paths, bins, quantile_, pop, sparse = FALSE
     message("")
   }
 }
-
 
 
 
@@ -265,10 +264,10 @@ path.to.dbs <- path.to.dbs[-c(grep("KM1923_740", path.to.dbs))]
 
 pop <- "prochloro"
 quantile_ <- "2.5"
-bins <- 50
+bins <- 30
 global_Qc_range_flag <- TRUE # range Sept 2022 (v1.5) : 0.008140889 - 0.260508439
 cores <- 4
-out_dir <- paste0("data/",as.Date(Sys.time()))
+out_dir <- paste0(as.Date(Sys.time()))
 
 cruises <- basename(dirname(path.to.dbs))
 
@@ -299,8 +298,8 @@ global_Qc_range_flag <- TRUE
 
 if (global_Qc_range_flag) {
   global_Qc_range_orig <- c(
-    min(cruise_paths$Qc_range_orig_start),
-    max(cruise_paths$Qc_range_orig_end))
+    min(cruise_paths$Qc_range_orig_start, na.rm = TRUE),
+    max(cruise_paths$Qc_range_orig_end, na.rm = TRUE))
   global_Qc_range_data <- get_delta_v_int_Qc_range(global_Qc_range_orig, bins)
   print(global_Qc_range_data)
   
@@ -308,6 +307,7 @@ if (global_Qc_range_flag) {
   # Qc ranges.
   cruise_paths$Qc_range_start <- global_Qc_range_data$Qc_range[1]
   cruise_paths$Qc_range_end <- global_Qc_range_data$Qc_range[2]
+
 }
 
 
