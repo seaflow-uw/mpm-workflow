@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import logging
 logging.basicConfig(handlers=[logging.NullHandler()])
 logger = logging.getLogger(__name__)

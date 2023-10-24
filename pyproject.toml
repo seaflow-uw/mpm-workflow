@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "seaflowmpm"
+version = "0.3.0"
+description = ""
+authors = ["Chris Berthiaume <chrisbee@uw.edu>", "Francois Ribalet <ribalet@uw.edu>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "~3.8"
+pystan = "2.19.1.1"
+boltons = "^23.0.0"
+matplotlib = "~3.7.3"
+netcdf4 = "^1.6.4"
+pandas = "~2.0.3"
+jupyterlab = "^4.0.7"
+pyarrow = "^13.0.0"
+click = "^8.1.7"
+suncalc = "^0.1.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

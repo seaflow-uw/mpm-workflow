@@ -18,18 +18,25 @@ Either 1) install PyStan into a Python virtual environment or 2) build/use a Doc
 #### Python virtual environment for PyStan
 
 Create a Python virtual environment using whichever tool you'd like and install pystan2 requirements.
-Here we'll use pyenv, but `python -m venv /envlocation`, pipenv, poetry, etc would also work.
+Here we'll use poetry with Python 3.8.
 
-```bash
-pyenv virtualenv seaflow-model-pystan2
-pyenv activate seaflow-model-pystan2
-pip3 install --upgrade pip setuptools
-# If starting fresh with pinned pystan verison and regenerating requirements.txt
-# pip3 install matplotlib netCDF4 pandas pystan==2.19.1.1 jupyter pyarrow click
-# pip3 freeze > requirements-pystan2.txt
+```sh
+poetry install
+# ... do poetry things
+# Export requirements if any have changed
+poetry export >requirements-pystan2.txt
+```
 
-# Install from existing requirements.txt
+Or to use a standard virtual environment
+
+```sh
+python3 -m venv ./venv
+source ./venv/bin/activate
+pip3 install -U setuptools wheel pip
 pip3 install -r requirements-pystan2.txt
+deactivate
+```
+
 ```
 
 #### Docker build PyStan2
@@ -43,8 +50,8 @@ docker build -t seaflow-model-pystan2 --build-arg REQUIREMENTS_FILE=requirements
 You may want to tag this image with your Docker Hub account and upload to Docker Hub.
 
 ```bash
-docker tag seaflow-model-pystan2 myaccount/seaflow-model-pystan2
-docker push myaccount/seaflow-model-pystan2
+docker tag seaflow-model-pystan2 myaccount/seaflow-model-pystan2:version
+docker push myaccount/seaflow-model-pystan2:version
 ```
 
 ## Run
