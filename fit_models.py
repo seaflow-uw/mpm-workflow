@@ -129,11 +129,16 @@ def cli():
 @cli.command('days')
 @click.option('--par-file', required=True, type=click.Path(exists=True, file_okay=True, dir_okay=False),
               help='PAR Parquet file.')
+@click.option('--psd-file', required=True, type=click.Path(exists=True, dir_okay=False, file_okay=True),
+            help='Size distribution counts Parquet file.')
 @click.option('--no-sunrise', is_flag=True, default=False, show_default=True,
               help="Don't start days at sunrise.")
-def cmd_days(par_file, no_sunrise):
+def cmd_days(par_file, psd_file, no_sunrise):
     """Print a table of cruise days in this dated parquet file"""
-    cruise_days = get_cruise_days(pd.read_parquet(par_file), sunrise_days=not no_sunrise)
+    psd = pd.read_parquet(psd_file)
+    par = pd.read_parquet(par_file)
+    par = align_par(par, psd)
+    cruise_days = get_cruise_days(par, sunrise_days=not no_sunrise)
     print(cruise_days.to_string(index=False))
 
 
@@ -205,12 +210,13 @@ def parse_days_option(ctx, param, value):
             help='This process will not directly spawn subprocesses.')
 def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, par_file,
                   use_model_cache, cruise, days, no_sunrise, jobs, leaf):
-    """Run a Stan model for all cruises in output_dir"""
+    """Run a Stan model for all cruises, write to output_dir"""
     # Read the three data files and do some basic checks
     logger.info('reading data files')
     psd = pd.read_parquet(psd_file)
     par = pd.read_parquet(par_file)
     grid = pd.read_parquet(grid_file)
+    par = align_par(par, psd)
     if not np.array_equal(np.sort(psd['cruise'].unique()), np.sort(par['cruise'].unique())):
         raise click.ClickException('Mismatched cruise sets in psd-file and par-file')
     if not np.array_equal(np.sort(psd['cruise'].unique()), np.sort(grid['cruise'].unique())):
@@ -357,12 +363,13 @@ def cmd_run_model(desc, stan_file, model_name, output_dir, psd_file, grid_file, 
 @click.option('--no-sunrise', is_flag=True, default=False, show_default=True,
               help="Don't start days at sunrise.")
 def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise, no_sunrise):
-    """Run a Stan model for all cruises in output_dir"""
+    """Plot data for all cruises, write to output_dir"""
     # Read the three data files and do some basic checks
     logger.info('reading data files')
     psd = pd.read_parquet(psd_file)
     par = pd.read_parquet(par_file)
     grid = pd.read_parquet(grid_file)
+    par = align_par(par, psd)
     if not np.array_equal(np.sort(psd['cruise'].unique()), np.sort(par['cruise'].unique())):
         raise click.ClickException('Mismatched cruise sets in psd-file and par-file')
     if not np.array_equal(np.sort(psd['cruise'].unique()), np.sort(grid['cruise'].unique())):
@@ -392,6 +399,20 @@ def cmd_plot_cruise(desc, output_dir, psd_file, grid_file, par_file, cruise, no_
             psd_file, par_file, grid_file, cruise, desc, output_dir,
             start_timestamp=cruise_start
         )
+
+
+def align_par(par: pd.DataFrame, psd: pd.DataFrame) -> pd.DataFrame:
+    """Only keep PAR data with cruise/datetime combo present in psd"""
+    psd_group_keys = list(psd.groupby(["cruise", "date"], observed=True).groups.keys())
+    psd_group_keys_t = list(zip(*psd_group_keys))
+    psd_dts = pd.DataFrame({
+        "cruise": psd_group_keys_t[0],
+        "date": psd_group_keys_t[1]
+    })
+    par = pd.merge(par, psd_dts, how="inner", on=["cruise", "date"])
+    if not np.array_equal(np.sort(psd['date'].unique()), np.sort(par['date'].unique())):
+        raise ValueError('Mismatched date sets in psd and par')
+    return par
 
 
 def process_cruise_day(psd_file, par_file, grid_file, cruise, day, model_name,
@@ -590,6 +611,7 @@ def get_data_parquet(psd_file, par_file, grid_file, desc, cruise,
     grid = grid[grid['cruise'] == cruise].reset_index(drop=True)
     if (len(psd) == 0 or len(par) == 0 or len(grid) == 0):
         raise Exception("incomplete data after selecting for cruise")
+    par = align_par(par, psd)
 
     logger.info('md5(psd["%s"]) = %s', coord_col, md5(psd[coord_col].values.tobytes()).hexdigest())
     logger.info('md5(par["par"]) = %s', md5(par['par'].values.tobytes()).hexdigest())
